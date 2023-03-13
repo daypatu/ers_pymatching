@@ -323,6 +323,15 @@ class Matching:
         else:
             return correction
 
+    def get_syndrome_batch(self, error_shots: np.ndarray) -> np.ndarray:
+        return self._matching_graph.get_syndrome_batch(error_shots)
+
+    def update_membrane_batch(self, erasure_shots: np.ndarray, membrane: np.ndarray) -> np.ndarray:
+        return self._matching_graph.update_membrane_batch(erasure_shots, membrane);
+
+    def decode_batch_with_erasure(self, shots: np.ndarray, erasure_shots: np.ndarray) -> np.ndarray:
+        return self._matching_graph.decode_batch_with_erasure(shots, erasure_shots)
+
     def decode_batch(
             self,
             shots: np.ndarray,

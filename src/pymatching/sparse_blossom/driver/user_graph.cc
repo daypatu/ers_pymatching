@@ -14,6 +14,101 @@
 
 #include "pymatching/sparse_blossom/driver/user_graph.h"
 
+std::vector<size_t> get_start_nodes(
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane) {
+    std::vector<size_t> start_nodes;
+    for (auto it = membrane.begin(); it != membrane.end(); ++it) {
+        if (erasures.count(*it) > 0) {
+            start_nodes.push_back(it->node1);
+        }
+    }
+    return start_nodes;
+}
+
+bool percolate(const pm::UserGraph& user_graph,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane) {
+    // std::vector<size_t> parent(user_graph.nodes.size(), SIZE_MAX);
+    std::vector<size_t> intersections(user_graph.nodes.size(), 0);
+    std::vector<bool> visited(user_graph.nodes.size(), false);
+    std::vector<size_t> nodes_stack = get_start_nodes(erasures, membrane);
+    while (!nodes_stack.empty()) {
+        size_t node_ind = nodes_stack.back();
+        auto node = user_graph.nodes[node_ind];
+        nodes_stack.pop_back();
+        visited[node_ind] = true;
+        for (auto neighbor : node.neighbors) {
+            if (erasures.count(*neighbor.edge_it) == 0) {
+                continue;
+            }
+            size_t target =
+                (neighbor.pos == 0) ? neighbor.edge_it->node1 : neighbor.edge_it->node2;
+            size_t intersect = membrane.count(*neighbor.edge_it);
+            if (!visited[target]) {
+                nodes_stack.push_back(target);
+                // parent[target] = node_ind;
+                intersections[target] = intersections[node_ind] + intersect;
+            } else {
+                if ((intersections[target] + intersect
+                            - intersections[node_ind]) % 2 == 1) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+void deform_membrane(const pm::UserGraph& user_graph,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane,
+        uint8_t* begin_ptr) {
+    // check percolation
+    if (percolate(user_graph, erasures, membrane)) {
+        return;
+    }
+    // deform membrane
+    std::unordered_set<pm::UserEdge, pm::EdgeHash>
+        deformed_membrane(membrane);
+    std::vector<size_t> nodes_stack = get_start_nodes(erasures, membrane);
+    while (!nodes_stack.empty()) {
+        auto node = user_graph.nodes[nodes_stack.back()];
+        nodes_stack.pop_back();
+        bool multiply = false;
+        for (auto neighbor : node.neighbors) {
+            if (deformed_membrane.count(*neighbor.edge_it) > 0 &&
+                    erasures.count(*neighbor.edge_it) > 0) {
+                multiply = true;
+                break;
+            }
+        }
+        if (!multiply) {
+            continue;
+        }
+        for (auto neighbor : node.neighbors) {
+            if (deformed_membrane.count(*neighbor.edge_it) > 0) {
+                deformed_membrane.erase(*neighbor.edge_it);
+            } else {
+                deformed_membrane.insert(*neighbor.edge_it);
+                if (erasures.count(*neighbor.edge_it) > 0) {
+                    size_t target =
+                        (neighbor.pos == 0) ? neighbor.edge_it->node1 : neighbor.edge_it->node2;
+                    nodes_stack.push_back(target);
+                }
+            }
+        }
+    }
+
+    uint64_t pos = 0;
+    for (auto it = user_graph.edges.begin(); it != user_graph.edges.end(); ++it) {
+        if (deformed_membrane.count(*it) > 0) {
+            *(begin_ptr + pos) ^= 1;
+        }
+        ++pos;
+    }
+}
+
 pm::UserNode::UserNode() : is_boundary(false) {
 }
 

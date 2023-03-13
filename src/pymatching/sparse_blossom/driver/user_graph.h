@@ -19,6 +19,7 @@
 #include <list>
 #include <set>
 #include <vector>
+#include <unordered_set>
 
 #include "pymatching/rand/rand_gen.h"
 #include "pymatching/sparse_blossom/driver/io.h"
@@ -32,6 +33,13 @@ struct UserEdge {
     std::vector<size_t> observable_indices;  /// The indices of the observables crossed along this edge
     double weight;                           /// The weight of the edge to this neighboring node
     double error_probability;                /// The error probability associated with this node
+    bool operator==(const UserEdge& other) const {
+        if (this->node1 == other.node1 && this->node2 == other.node2) {
+            return true;
+        } else {
+            return false;
+        }
+    }
 };
 
 struct UserNeighbor {
@@ -143,6 +151,20 @@ inline double UserGraph::iter_discretized_edges(
 
 UserGraph detector_error_model_to_user_graph(const stim::DetectorErrorModel& detector_error_model);
 
+struct EdgeHash {
+    size_t operator()(const UserEdge& edge) const {
+        size_t sourceHash = std::hash<size_t>()(edge.node1);
+        size_t targetHash = std::hash<size_t>()(edge.node2) << 1;
+        return sourceHash ^ targetHash;
+    }
+};
+
 }  // namespace pm
+
+
+void deform_membrane(const pm::UserGraph& user_graph,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
+        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane,
+        uint8_t* begin_ptr);
 
 #endif  // PYMATCHING2_USER_GRAPH_H
