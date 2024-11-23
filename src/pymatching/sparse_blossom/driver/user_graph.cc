@@ -13,100 +13,95 @@
 // limitations under the License.
 
 #include "pymatching/sparse_blossom/driver/user_graph.h"
+#include <math.h>
+
 
 std::vector<size_t> get_start_nodes(
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane) {
+        const std::unordered_set<pm::UserEdge*>& erasures,
+        const std::unordered_set<pm::UserEdge*>& membrane) {
     std::vector<size_t> start_nodes;
-    for (auto it = membrane.begin(); it != membrane.end(); ++it) {
-        if (erasures.count(*it) > 0) {
-            start_nodes.push_back(it->node1);
+    for (auto& edge_ptr : membrane) {
+        if (erasures.count(edge_ptr) > 0) {
+            start_nodes.push_back(edge_ptr->node1);
         }
     }
     return start_nodes;
 }
 
 bool percolate(const pm::UserGraph& user_graph,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane) {
-    // std::vector<size_t> parent(user_graph.nodes.size(), SIZE_MAX);
+        const std::unordered_set<pm::UserEdge*>& erasures,
+        const std::unordered_set<pm::UserEdge*>& membrane) {
     std::vector<size_t> intersections(user_graph.nodes.size(), 0);
     std::vector<bool> visited(user_graph.nodes.size(), false);
     std::vector<size_t> nodes_stack = get_start_nodes(erasures, membrane);
-    while (!nodes_stack.empty()) {
-        size_t node_ind = nodes_stack.back();
-        auto node = user_graph.nodes[node_ind];
-        nodes_stack.pop_back();
-        visited[node_ind] = true;
-        for (auto neighbor : node.neighbors) {
-            if (erasures.count(*neighbor.edge_it) == 0) {
-                continue;
-            }
-            size_t target =
-                (neighbor.pos == 0) ? neighbor.edge_it->node1 : neighbor.edge_it->node2;
-            size_t intersect = membrane.count(*neighbor.edge_it);
-            if (!visited[target]) {
-                nodes_stack.push_back(target);
-                // parent[target] = node_ind;
-                intersections[target] = intersections[node_ind] + intersect;
-            } else {
-                if ((intersections[target] + intersect
-                            - intersections[node_ind]) % 2 == 1) {
-                    return true;
+    return dfs(user_graph, nodes_stack, visited,
+            [&](size_t target, size_t source,
+                  std::list<pm::UserEdge>::iterator edge_it) {
+                if (erasures.count(&(*edge_it)) == 0) {
+                    return IGNORE;
                 }
-            }
-        }
-    }
-    return false;
+                auto intersection = membrane.count(&(*edge_it));
+                if (visited[target]) {
+                    if ((intersections[target]  + intersection
+                            - intersections[source]) % 2 == 1) {
+                        return STOP;
+                    }
+                } else {
+                    intersections[target] = intersections[source] + intersection;
+                }
+                return PASS;
+            });
 }
 
-void deform_membrane(const pm::UserGraph& user_graph,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane,
-        uint8_t* begin_ptr) {
-    // check percolation
-    if (percolate(user_graph, erasures, membrane)) {
-        return;
-    }
-    // deform membrane
-    std::unordered_set<pm::UserEdge, pm::EdgeHash>
-        deformed_membrane(membrane);
-    std::vector<size_t> nodes_stack = get_start_nodes(erasures, membrane);
-    while (!nodes_stack.empty()) {
-        auto node = user_graph.nodes[nodes_stack.back()];
-        nodes_stack.pop_back();
-        bool multiply = false;
-        for (auto neighbor : node.neighbors) {
-            if (deformed_membrane.count(*neighbor.edge_it) > 0 &&
-                    erasures.count(*neighbor.edge_it) > 0) {
-                multiply = true;
-                break;
-            }
-        }
-        if (!multiply) {
-            continue;
-        }
-        for (auto neighbor : node.neighbors) {
-            if (deformed_membrane.count(*neighbor.edge_it) > 0) {
-                deformed_membrane.erase(*neighbor.edge_it);
-            } else {
-                deformed_membrane.insert(*neighbor.edge_it);
-                if (erasures.count(*neighbor.edge_it) > 0) {
-                    size_t target =
-                        (neighbor.pos == 0) ? neighbor.edge_it->node1 : neighbor.edge_it->node2;
-                    nodes_stack.push_back(target);
-                }
-            }
+void update_weight(pm::Mwpm& mwpm, size_t u, size_t v, pm::weight_int weight) {
+    //auto& search_u = mwpm.search_flooder.graph.nodes[u];
+    //auto& search_v = mwpm.search_flooder.graph.nodes[v];
+    //if (search_u.neighbors.size() != 4) {
+    //    throw std::invalid_argument("#neighbor=" + std::to_string(search_u.neighbors.size()));
+    //}
+    //if (search_u.neighbor_weights.size() != 4) {
+    //    throw std::invalid_argument("#neighbo_weights=" + std::to_string(search_u.neighbor_weights.size()));
+    //}
+    //if (search_u.index_of_neighbor(&search_v) >= 4) {
+    //    throw std::invalid_argument(std::to_string(search_u.index_of_neighbor(&search_v)));
+    //}
+    //search_u.neighbor_weights[search_u.index_of_neighbor(&search_v)] = weight;
+    //search_v.neighbor_weights[search_v.index_of_neighbor(&search_u)] = weight;
+    auto& match_u = mwpm.flooder.graph.nodes[u];
+    auto& match_v = mwpm.flooder.graph.nodes[v];
+    match_u.neighbor_weights[match_u.index_of_neighbor(&match_v)] = weight;
+    match_v.neighbor_weights[match_v.index_of_neighbor(&match_u)] = weight;
+    /*auto& search_nodes = mwpm.search_flooder.graph.nodes;
+    for (size_t i = 0; i < search_nodes[u].neighbors.size(); ++i) {
+        if (search_nodes[u].neighbors[i] == search_nodes.data() + v) {
+            search_nodes[u].neighbor_weights[i] = weight;
+            break;
         }
     }
-
-    uint64_t pos = 0;
-    for (auto it = user_graph.edges.begin(); it != user_graph.edges.end(); ++it) {
-        if (deformed_membrane.count(*it) > 0) {
-            *(begin_ptr + pos) ^= 1;
+    for (size_t i = 0; i < search_nodes[v].neighbors.size(); ++i) {
+        if (search_nodes[v].neighbors[i] == search_nodes.data() + u) {
+            search_nodes[v].neighbor_weights[i] = weight;
+            break;
         }
-        ++pos;
     }
+    auto& matching_nodes = mwpm.flooder.graph.nodes;
+    size_t ind = 0;
+    for (size_t i = 0; i < matching_nodes[u].neighbors.size(); ++i) {
+        if (matching_nodes[u].neighbors[i] == matching_nodes.data() + v) {
+            matching_nodes[u].neighbor_weights[i] = weight;
+            ind = i;
+            break;
+        }
+    }
+    for (size_t i = 0; i < matching_nodes[v].neighbors.size(); ++i) {
+        if (matching_nodes[v].neighbors[i] == matching_nodes.data() + u) {
+            matching_nodes[v].neighbor_weights[i] = weight;
+            break;
+        }
+    }
+    //if (mwpm.flooder.graph.nodes[u].neighbor_weights[ind] != weight) {
+    //    throw std::invalid_argument("Different weights");
+    //}*/
 }
 
 pm::UserNode::UserNode() : is_boundary(false) {
@@ -271,7 +266,7 @@ std::set<size_t> pm::UserGraph::get_boundary() {
     return boundary_nodes;
 }
 
-size_t pm::UserGraph::get_num_observables() {
+size_t pm::UserGraph::get_num_observables() const {
     return _num_observables;
 }
 
@@ -477,6 +472,19 @@ double pm::UserGraph::get_edge_weight_normalising_constant(size_t max_num_distin
         pm::weight_int max_half_edge_weight = max_num_distinct_weights - 1;
         return (double)max_half_edge_weight / max_abs_weight;
     }
+}
+
+void pm::UserGraph::reconcile_weights() {
+    double normalising_constant = iter_discretized_edges(
+        pm::NUM_DISTINCT_WEIGHTS,
+        [&](size_t u, size_t v, pm::signed_weight_int weight, const std::vector<size_t>& observables) {
+            update_weight(_mwpm, u, v, std::abs(weight));
+            return;
+        },
+        [&](size_t u, pm::signed_weight_int weight, const std::vector<size_t>& observables) {
+            return;  // TODO: process reconciliation of boundary edges
+        });
+    _mwpm.flooder.graph.normalising_constant = normalising_constant;
 }
 
 pm::UserGraph pm::detector_error_model_to_user_graph(const stim::DetectorErrorModel& detector_error_model) {

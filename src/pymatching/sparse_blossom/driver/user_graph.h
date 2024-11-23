@@ -92,7 +92,7 @@ class UserGraph {
     bool has_boundary_edge(size_t node);
     void set_boundary(const std::set<size_t>& boundary);
     std::set<size_t> get_boundary();
-    size_t get_num_observables();
+    size_t get_num_observables() const;
     void set_min_num_observables(size_t num_observables);
     size_t get_num_nodes();
     size_t get_num_detectors();
@@ -115,6 +115,7 @@ class UserGraph {
     Mwpm& get_mwpm_with_search_graph();
     void handle_dem_instruction(double p, const std::vector<size_t>& detectors, const std::vector<size_t>& observables);
     void get_nodes_on_shortest_path_from_source(size_t src, size_t dst, std::vector<size_t>& out_nodes);
+    void reconcile_weights();
 
    private:
     pm::Mwpm _mwpm;
@@ -128,7 +129,7 @@ inline double UserGraph::iter_discretized_edges(
     pm::weight_int num_distinct_weights,
     const EdgeCallable& edge_func,
     const BoundaryEdgeCallable& boundary_edge_func) {
-    pm::MatchingGraph matching_graph(nodes.size(), _num_observables);
+    //pm::MatchingGraph matching_graph(nodes.size(), _num_observables);
     double normalising_constant = get_edge_weight_normalising_constant(num_distinct_weights);
 
     for (auto& e : edges) {
@@ -151,20 +152,41 @@ inline double UserGraph::iter_discretized_edges(
 
 UserGraph detector_error_model_to_user_graph(const stim::DetectorErrorModel& detector_error_model);
 
-struct EdgeHash {
-    size_t operator()(const UserEdge& edge) const {
-        size_t sourceHash = std::hash<size_t>()(edge.node1);
-        size_t targetHash = std::hash<size_t>()(edge.node2) << 1;
-        return sourceHash ^ targetHash;
-    }
-};
-
 }  // namespace pm
 
+enum EDGE_STRATEGY : uint8_t { IGNORE, PASS, STOP };
 
-void deform_membrane(const pm::UserGraph& user_graph,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& erasures,
-        const std::unordered_set<pm::UserEdge, pm::EdgeHash>& membrane,
-        uint8_t* begin_ptr);
+template <typename EdgeVisitor>
+bool dfs(const pm::UserGraph& user_graph,
+        std::vector<size_t>& nodes_stack, std::vector<bool>& visited,
+        const EdgeVisitor& edge_visitor) {
+    while (!nodes_stack.empty()) {
+        size_t node_ind = nodes_stack.back();
+        nodes_stack.pop_back();
+        if (visited[node_ind]) {
+            continue;
+        }
+        visited[node_ind] = true;
+        auto& node = user_graph.nodes[node_ind];
+        for (auto neighbor : node.neighbors) {
+            size_t target =
+                (neighbor.pos == 0) ? neighbor.edge_it->node1 : neighbor.edge_it->node2;
+            EDGE_STRATEGY code = edge_visitor(target, node_ind, neighbor.edge_it);
+            if (code == STOP) {
+                return true;
+            }
+            if (code == PASS) {
+                nodes_stack.push_back(target);
+            }
+        }
+    }
+    return false;
+}
+
+bool percolate(const pm::UserGraph& user_graph,
+        const std::unordered_set<pm::UserEdge*>& erasures,
+        const std::unordered_set<pm::UserEdge*>& membrane);
+
+void update_weight(pm::Mwpm& mwpm, size_t u, size_t v, pm::weight_int weight);
 
 #endif  // PYMATCHING2_USER_GRAPH_H

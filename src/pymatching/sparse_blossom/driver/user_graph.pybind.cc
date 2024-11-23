@@ -278,8 +278,7 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
             return syndrome_batch;
         },
         "error_batch"_a);
-    g.def(
-        "update_membrane_batch",
+    g.def("percolate_batch",
         [](pm::UserGraph &self, const py::array_t<uint8_t> &erasure_shots,
            const py::array_t<uint8_t> &membrane) {
             if (erasure_shots.ndim() != 2) {
@@ -308,53 +307,58 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
             }
             auto w = erasure_shots.unchecked<2>();
             auto m = membrane.unchecked<1>();
-            py::array_t<uint8_t> deformed_membranes = py::array_t<uint8_t>(
-                    erasure_shots.shape(0) * erasure_shots.shape(1));
-            deformed_membranes[py::make_tuple(py::ellipsis())] = 0;  // Initialise to 0
-            py::buffer_info buff = deformed_membranes.request();
-            uint8_t *deformed_membrane_ptr = (uint8_t *)buff.ptr;
+            py::array_t<bool> percolation_indicator = py::array_t<bool>(
+                    erasure_shots.shape(0));
+            percolation_indicator[py::make_tuple(py::ellipsis())] = true;  // Initialise to 0
+            py::buffer_info buff = percolation_indicator.request();
+            bool *percolation_indicator_ptr = (bool *)buff.ptr;
+
+            std::unordered_set<pm::UserEdge*> membrane_set;
+            py::ssize_t j = 0;
+            for (auto& e : self.edges) {
+                if (m(j) == 1) {
+                    membrane_set.insert(&e);
+                }
+                ++j;
+            }
 
             for (py::ssize_t i = 0; i < w.shape(0); ++i) {
-                std::unordered_set<pm::UserEdge, pm::EdgeHash> erasures;
-                std::unordered_set<pm::UserEdge, pm::EdgeHash> membrane_set;
+                std::unordered_set<pm::UserEdge*> erasures(self.get_num_nodes() / 10);
                 py::ssize_t j = 0;
-                for (auto it = self.edges.begin(); it != self.edges.end(); ++it) {
+                for (auto& e : self.edges) {
                     if (w(i, j) == 1) {
-                        erasures.insert(*it);
-                    }
-                    if (m(j) == 1) {
-                        membrane_set.insert(*it);
+                        erasures.insert(&e);
                     }
                     ++j;
                 }
-                deform_membrane(self, erasures, membrane_set, deformed_membrane_ptr + (self.get_num_edges() * i));
+                
+                *(percolation_indicator_ptr + i) = !percolate(self, erasures, membrane_set);
             }
-            deformed_membranes.resize(
-                    {(py::ssize_t)erasure_shots.shape(0), (py::ssize_t)erasure_shots.shape(1)});
-            return deformed_membranes;
+            return percolation_indicator;
         },
-        "erasure_shots"_a, "membrane"_a);
+        "erasure_shots"_a,
+        "membrane"_a);
     g.def(
         "decode_batch_with_erasure",
-        [](pm::UserGraph &self, const py::array_t<uint8_t> &shots, const py::array_t<uint8_t> &erasure_shots) {
+        [](pm::UserGraph &self, const py::array_t<uint8_t> &shots, const py::array_t<double> &weight_batch) {
             if (shots.ndim() != 2)
                 throw std::invalid_argument(
                     "`shots` array should have two dimensions, not " + std::to_string(shots.ndim()));
-            if (erasure_shots.ndim() != 2)
+            if (weight_batch.ndim() != 2)
                 throw std::invalid_argument(
-                    "`erasure_shots` array should have two dimensions, not " +
-                    std::to_string(erasure_shots.ndim()));
-            if (erasure_shots.shape(0) != shots.shape(0)) {
+                    "`weight_batch` array should have two dimensions, not " +
+                    std::to_string(weight_batch.ndim()));
+            if (weight_batch.shape(0) != shots.shape(0)) {
                 throw std::invalid_argument(
-                    "The number of rows of `erasure_shots` array should be equal to \
+                    "The number of rows of `weight_batch` array should be equal to \
                     the number of rows of `shots` array");
             }
-            if (erasure_shots.shape(1) != self.get_num_edges()) {
+            if (weight_batch.shape(1) != self.get_num_edges()) {
                 throw std::invalid_argument(
-                    "the number of columns of `erasure_shots` array should be equal to number "
+                    "the number of columns of `weight_batch` array should be equal to number "
                     + std::to_string(self.get_num_edges()) +
                     " which is the number of edges in syndrome graph, but instead it is equal to " +
-                    std::to_string(erasure_shots.shape(1)) + " columns");
+                    std::to_string(weight_batch.shape(1)) + " columns");
             }
             if (shots.shape(1) < self.get_num_detectors() || shots.shape(1) > self.get_num_nodes()) {
                 throw std::invalid_argument(
@@ -371,18 +375,17 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
             py::buffer_info buff = predictions.request();
             uint8_t *predictions_ptr = (uint8_t *)buff.ptr;
 
+            auto &mwpm = self.get_mwpm();
             std::vector<uint64_t> detection_events;
             auto s = shots.unchecked<2>();
-            auto es = erasure_shots.unchecked<2>();
-            for (py::ssize_t i = 0; i < es.shape(0); ++i) {
+            auto wb = weight_batch.unchecked<2>();
+            for (py::ssize_t i = 0; i < wb.shape(0); ++i) {
                 py::ssize_t j = 0;
                 for (auto& e : self.edges) {
-                    if (es(i, j) == 1) {
-                        e.weight = 0;
-                    }
-                    j += 1;
+                    e.weight = wb(i, j);
+                    ++j;
                 }
-                auto &mwpm = self.get_mwpm();
+                self.reconcile_weights();
                 for (py::ssize_t j = 0; j < s.shape(1); ++j) {
                     if (s(i, j)) {
                         detection_events.push_back(j);
@@ -394,16 +397,13 @@ void pm_pybind::pybind_user_graph_methods(py::module &m, py::class_<pm::UserGrap
                     predictions_ptr + (self.get_num_observables() * i),
                     solution_weight);
                 detection_events.clear();
-                for (auto& e : self.edges) {
-                    e.weight = 1;
-                }
             }
             predictions.resize({(py::ssize_t)shots.shape(0),
                     (py::ssize_t)self.get_num_observables()});
             return predictions;
         },
         "shots"_a,
-        "erasure_shots"_a);
+        "weight_batch"_a);
     g.def(
         "decode_batch",
         [](pm::UserGraph &self, const py::array_t<uint8_t> &shots, bool bit_packed_shots, bool bit_packed_predictions) {
